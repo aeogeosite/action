@@ -28,7 +28,7 @@ inputs:
   cli_version:
     description: "aeogeo CLI version from npm. Pinned so a new CLI release never changes a run unannounced."
     required: false
-    default: "0.1.0"
+    default: "0.1.1"
 
 outputs:
   exit_code:
