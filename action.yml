@@ -1,0 +1,101 @@
+name: "aeogeo lint"
+description: >-
+  Deterministic AEO/GEO linting for AI-search visibility (FR-CI-1/2). Wraps the
+  aeogeo CLI on the customer's own runner: emits GitHub annotations and a JSON
+  artifact (FR-SCAN-4 keyed shape) that a coding agent can read and act on.
+author: aeogeo
+
+inputs:
+  api_key:
+    description: "AEOGEO API key for the keyed JIT ruleset fetch. Pass from a GitHub secret, e.g. secrets.AEOGEO_API_KEY."
+    required: true
+  paths:
+    description: "Files or globs to lint, space-separated (CLI globs: *, **, ?, {a,b}). Defaults to HTML/Markdown across the repo."
+    required: false
+    default: "**/*.html **/*.htm **/*.md"
+  content_types:
+    description: "Comma-separated content types to filter checks by (e.g. blog,landing,product,faq). Empty runs all applicable checks."
+    required: false
+    default: ""
+  fail_on:
+    description: "Lowest severity that fails the job: error or warn."
+    required: false
+    default: "error"
+  allow_stale:
+    description: "Permit linting with a past-TTL cached ruleset when the API is unreachable."
+    required: false
+    default: "false"
+  cli_version:
+    description: "aeogeo CLI version from npm. Pinned so a new CLI release never changes a run unannounced."
+    required: false
+    default: "0.1.0"
+
+outputs:
+  exit_code:
+    description: "aeogeo lint exit code (0 = pass, 1 = severity failures, 2 = operational error)."
+    value: ${{ steps.lint.outputs.exit_code }}
+  artifact_path:
+    description: "Absolute path to the JSON report artifact (single-report FR-SCAN-4 shape)."
+    value: ${{ steps.lint.outputs.artifact_path }}
+  json_report:
+    description: "Full JSON report as a single-line string — parse this to drive an autonomous coding agent."
+    value: ${{ steps.lint.outputs.json_report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
+    - name: Lint with aeogeo (annotations, JSON report, exit code)
+      id: lint
+      shell: bash
+      env:
+        AEOGEO_API_KEY: ${{ inputs.api_key }}
+        AEOGEO_CACHE_DIR: ${{ runner.temp }}/.aeogeo
+        AEOGEO_CLI_VERSION: ${{ inputs.cli_version }}
+        AEOGEO_PATHS: ${{ inputs.paths }}
+        AEOGEO_CONTENT_TYPES: ${{ inputs.content_types }}
+        AEOGEO_FAIL_ON: ${{ inputs.fail_on }}
+        AEOGEO_ALLOW_STALE: ${{ inputs.allow_stale }}
+      run: |
+        set +e
+        # Inputs arrive via env (not ${{ }} expansion in the script) so values
+        # cannot inject shell syntax into this step (FR-CI-1 hardening).
+        # One run prints the annotations and writes the JSON report, so pages
+        # are linted and rules fetched once (Heal s4-ci-action-lints-twice-per-run-1).
+        report="${RUNNER_TEMP}/aeogeo-report.json"
+        IFS=' ' read -r -a path_args <<< "$AEOGEO_PATHS"
+        cmd=(npx --yes "aeogeo@${AEOGEO_CLI_VERSION}" lint "${path_args[@]}" --github --json-out "$report" --fail-on "$AEOGEO_FAIL_ON")
+        if [ -n "$AEOGEO_CONTENT_TYPES" ]; then
+          cmd+=(--content-type "$AEOGEO_CONTENT_TYPES")
+        fi
+        if [ "$AEOGEO_ALLOW_STALE" = "true" ]; then
+          cmd+=(--allow-stale)
+        fi
+        # Annotations go straight to the log, where GitHub reads ::error/::warning lines.
+        "${cmd[@]}"
+        code=$?
+        echo "exit_code=${code}" >> "${GITHUB_OUTPUT}"
+        echo "artifact_path=${report}" >> "${GITHUB_OUTPUT}"
+        # Single-line JSON for outputs.json_report so a coding agent can parse it.
+        echo "json_report=$(jq -c . "$report" 2>/dev/null || echo '{}')" >> "${GITHUB_OUTPUT}"
+        exit 0
+
+    - name: Upload JSON report artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: aeogeo-report
+        path: ${{ runner.temp }}/aeogeo-report.json
+        # Missing when the run stopped before linting (bad key, API down): the
+        # annotations and exit code still say why.
+        if-no-files-found: warn
+
+    - name: Fail on severity threshold
+      if: steps.lint.outputs.exit_code != '0'
+      shell: bash
+      run: |
+        echo "::error title=aeogeo lint failed::exit=${{ steps.lint.outputs.exit_code }} — see annotations and the aeogeo-report artifact (FR-CI-2)"
+        exit 1
