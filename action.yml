@@ -62,8 +62,9 @@ runs:
         AEOGEO_ALLOW_STALE: ${{ inputs.allow_stale }}
       run: |
         set +e
-        # Inputs arrive via env (not ${{ }} expansion in the script) so values
-        # cannot inject shell syntax into this step (FR-CI-1 hardening).
+        # Inputs arrive via env, not expression expansion inside the script, so
+        # values cannot inject shell syntax into this step (FR-CI-1 hardening).
+        # No expression may appear in a comment either: GitHub parses those too.
         # One run prints the annotations and writes the JSON report, so pages
         # are linted and rules fetched once (Heal s4-ci-action-lints-twice-per-run-1).
         report="${RUNNER_TEMP}/aeogeo-report.json"
